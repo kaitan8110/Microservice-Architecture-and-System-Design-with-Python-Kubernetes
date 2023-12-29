@@ -289,3 +289,848 @@ docker push <your-docker-username>/auth:latest
 
 Once that is finished, you can go to your **auth** repository and refresh the page. You should see your image tag here. That means we successfully push this image to our repository. 
 ![image pushed to auth repository](image_pushed_to_auth_repository.png)
+
+Next, make a directory named `manifests`. This directory is going to contain all of the `auth` service's kubernetes configuration. 
+```
+mkdir manifests
+```
+
+Change directory to manifests. 
+```
+cd manifests
+```
+
+Create an `auth-deploy.yaml` file with the below content.
+```
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth
+  labels:
+    app: auth
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: auth
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 3
+  template:
+    metadata:
+      labels:
+        app: auth
+    spec:
+      containers:
+        - name: auth
+          image: kaitan8110/auth
+          ports:
+            - containerPort: 5000
+          envFrom:
+            - configMapRef:
+                name: auth-configmap
+            - secretRef:
+                name: auth-secret
+```
+
+Create a `configmap.yaml` file with the below content.
+```
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-configmap
+data:
+  MYSQL_HOST: host.minikube.internal
+  MYSQL_USER: auth_user
+  MYSQL_DB: auth
+  MYSQL_PORT: "3306"
+```
+
+Create a `secret.yaml` file with the below content. (Usually, we don't push this file to the remote github repository as it contains application's sensitive information. Especially in a production environment.)
+```
+apiVersion: v1
+kind: Secret
+metadata:
+  name: auth-secret
+stringData:
+  MYSQL_PASSWORD: ComplexPassword123!
+  JWT_SECRET: sarcasm
+type: Opaque
+```
+
+Create a `service.yaml` file with the below content.
+```
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth
+spec:
+  selector:
+    app: auth
+  type: ClusterIP
+  ports:
+    - port: 5000
+      targetPort: 5000
+      protocol: TCP
+```
+
+Now that we have all our infrastructure code for our kubernetes deployment, we can actually start to deploy this `auth` service to our cluster. 
+
+Start Docker Desktop. Then start minikube. 
+```
+minikube start
+```
+
+Enter into K9s. 
+```
+K9s
+```
+
+Change the namespace to **all** by hitting `0`. 
+![K9s_1](k9s_1.png)
+
+We can see our minikube pods running within the kube-system namespace. 
+![K9s_2](k9s_2.png)
+
+Hit `Ctrl + C` to quit K9s interactive window. 
+
+Fyi, all of the files within this manifests directory, when applied will interface with the kubernetes API. So these files are going to interface with that API, to create our service and its corresponding resources. 
+
+Change to the `manifests` directory. Run the below to apply all the files in the current directory. (`-f` is a flag for files) 
+```
+kubectl apply -f ./
+```
+
+We can see the following kubernetes resources have been created. 
+![K9s resources created](k9s_resources_created.png)
+
+Both instances of our auth service are running now. 
+![Auth both instances running](auth_both_instances_running.png)
+
+Now, we can start to write the code for our gateway service. 
+
+### Gateway Service
+
+Cd into the root project directory. Then create a gateway directory. Next, initialise and activate a python environment. 
+```
+cd ../../
+mkdir gateway
+cd gateway
+python -m venv venv
+source ./venv/bin/activate
+```
+
+Create a `server.py` file, fill in below content and save. 
+```
+import os, gridfs, pika, json
+from flask import Flask, request
+from flask_pymongo import PyMongo
+from auth import validate
+from auth_svc import access
+from storage import util
+
+server = Flask(__name__)
+server.config["MONGO_URI"] = "mongodb://host.minikube.internal:27017/videos"
+
+mongo = PyMongo(server)
+```
+
+Next we will install all the dependencies. 
+```
+pip3 install pika flask pyMongo Flask-PyMongo
+```
+
+Continue writing code for `server.py`.  Save and exit. 
+```
+import os, gridfs, pika, json
+from flask import Flask, request
+from flask_pymongo import PyMongo
+from auth import validate
+from auth_svc import access
+from storage import util
+
+server = Flask(__name__)
+server.config["MONGO_URI"] = "mongodb://host.minikube.internal:27017/videos"
+
+mongo = PyMongo(server)
+
+fs = gridfs.GridFS(mongo.db)
+
+connection = pika.BlockingConnection(pika.ConnectionParameters("rabbitmq")) # Configure rabbitMQ connection, make communication with our rabbitMQ's queue synchronouns. 
+channel = connection.channel()
+
+@server.route("/login", methods=["POST"])
+def login():
+    token, err = access.login(request)
+```
+
+Create a directory named `auth_svc`. The `__init__.py` below essential marked the `auth_svc` directory as a package. 
+
+```
+mkdir auth_svc
+cd auth_svc
+touch __init__.py
+```
+
+Create an `access.py` file.  `access.py` is essentially a module that contains our login function. 
+```
+vim access.py 
+```
+
+Fill in the below content. Save and exit. 
+```
+import os, requests
+
+def login(request):
+    auth = request.authorization
+    if not auth:
+        return None, ("missing credentials", 401)
+    
+    basicAuth = (auth.username, auth.password)
+
+    response = requests.post(
+        f"http://{os.environ.get('AUTH_SVC_ADDRESS')}/login",
+        auth=basicAuth
+    )
+
+    if response.status_code == 200:
+        return response.txt, None
+    else:
+        return None, (response.txt, response.status_code)
+```
+
+Next, we will need to install `requests`. 
+```
+pip3 install requests
+```
+
+Continue filling code for `server.py`. 
+```
+import os, gridfs, pika, json
+from flask import Flask, request
+from flask_pymongo import PyMongo
+from auth import validate
+from auth_svc import access
+from storage import util
+
+server = Flask(__name__)
+server.config["MONGO_URI"] = "mongodb://host.minikube.internal:27017/videos"
+
+mongo = PyMongo(server)
+
+fs = gridfs.GridFS(mongo.db)
+
+connection = pika.BlockingConnection(pika.ConnectionParameters("rabbitmq")) # Configure rabbitMQ connection, make communication with our rabbitMQ's queue synchronouns. 
+channel = connection.channel()
+
+@server.route("/login", methods=["POST"])
+def login():
+    token, err = access.login(request)
+
+    if not err:
+        return token
+    else:
+        return err
+    
+@server.route("/upload", methods=["POST"])
+def upload():
+    access, err = validate.token(request)
+```
+
+Next, create a `validate` module. 
+```
+mkdir auth
+cd auth
+touch __init__.py
+vim validate.py
+```
+
+Fill in below content for `validate.py`. Save and exit. 
+```
+import os, requests
+
+def token(request):
+    if not "Authorization" in request.headers:
+        return None, ("missing credentials", 401)
+    
+    token = request.headers["Authorization"]
+
+    if not token:
+        return None, ("missing credentials", 401)
+    
+    response = request.post(
+        f"http://{os.environ.get('AUTH_SVC_ADDRESS')}/validate",
+        headers={"Authorization": token},
+    )
+
+    if response.status_code == 200:
+        return response.txt, None
+    else:
+        return None, (response.txt, response.status_code)
+```
+
+Continue writing code for `server.py`. It should look like this now. 
+```
+import os, gridfs, pika, json
+from flask import Flask, request
+from flask_pymongo import PyMongo
+from auth import validate
+from auth_svc import access
+from storage import util
+
+server = Flask(__name__)
+server.config["MONGO_URI"] = "mongodb://host.minikube.internal:27017/videos"
+
+mongo = PyMongo(server)
+
+fs = gridfs.GridFS(mongo.db)
+
+connection = pika.BlockingConnection(pika.ConnectionParameters("rabbitmq")) # Configure rabbitMQ connection, make communication with our rabbitMQ's queue synchronouns. 
+channel = connection.channel()
+
+@server.route("/login", methods=["POST"])
+def login():
+    token, err = access.login(request)
+
+    if not err:
+        return token
+    else:
+        return err
+    
+@server.route("/upload", methods=["POST"])
+def upload():
+    access, err = validate.token(request)
+
+    access = json.loads(access)
+
+    if access["admin"]:
+        if len(request.files) > 1 or len(request.files) < 1:
+            return "exactly 1 file required", 400
+
+        for _, f in request.files.items():
+            err = util.upload(f, fs, channel, access)
+        
+            if err:
+                return err
+        
+        return "success!", 200
+    else: 
+        return "not authorized", 401
+
+@server.route("/download", methods=["GET"])
+def download():
+    pass
+        
+if __name__ == "__main__":
+    server.run(host="0.0.0.0", port=8080)
+```
+
+Next, we need to create a `storage` package, and within that package, create a `util` module. 
+
+Cd to the `gateway` directory and run the below commands. 
+```
+mkdir storage
+cd storage
+touch __init__.py
+vim util.py
+```
+
+Fill in below code for `util.py`. Save and exit. 
+```
+import pika, json
+
+def upload(f, fs, channel, access):
+    try:
+        fid = fs.put(f)
+    except Exception as err:
+        return "internal server error", 500
+    
+    message = {
+        "video_fid": str(fid),
+        "mp3_fid": None,
+        "username": access["username"],        
+    }
+
+    try: 
+        channel.basic_publish(
+            exchange="",
+            routing_key="video",
+            body=json.dumps(message),
+            properties=pika.BasicProperties(
+                delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE
+            ),
+        )
+    except:
+        fs.delete(fid)
+        return "internal server error", 500
+```
+
+Change to gateway root directory. Next, we can start creating the deployment for the gateway service. 
+```
+cd ..
+```
+
+We will freeze our dependencies into a `requirements.txt` file first.
+```
+pip3 freeze > requirements.txt
+```
+
+Create our Dockerfile. 
+```
+vim Dockerfile
+```
+
+Fill in below code. Save and exit. 
+```
+FROM python:3.10-slim-bullseye
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --no-install-suggests \
+    build-essential \
+    && pip install --no-cache-dir --upgrade pip
+
+WORKDIR /app
+COPY ./requirements.txt /app
+RUN pip install --no-cache-dir --requirement /app/requirements.txt
+COPY . /app
+
+EXPOSE 8080
+
+CMD ["python3", "server.py"]
+```
+
+Let's build our image. 
+```
+docker build .
+```
+
+Tag your image.
+```
+docker tag <fill-in-your-sha256> <your-docker-username>/gateway:latest
+```
+
+Push your image. 
+```
+docker push <your-docker-username>/gateway:latest
+```
+
+It automatically create a remote gateway repository for us. 
+![Two repository](two_repository.png)
+
+Next, we will create our kubernetes infrastructure deployment files. 
+
+Create a `manifests` directory at the `gateway` directory level. And change directory to it. 
+```
+mkdir manifests
+cd manifests
+```
+
+Create a `gateway-deploy.yaml`.
+```
+vim gateway-deploy.yaml
+```
+
+Fill in below code. Save and exit. 
+```
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels:
+    app: gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gateway
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 3
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+        - name: gateway
+          image: kaitan8110/gateway
+          envFrom:
+            - configMapRef:
+                name: gateway-configmap
+            - secretRef:
+                name: gateway-secret
+```
+
+Create a `configmap.yaml` file. 
+```
+vim configmap.yaml
+```
+
+Fill in below code. Save and exit. 
+```
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-configmap
+data: 
+  AUTH_SVC_ADDRESS: "auth:5000"
+```
+
+Create a `secret.yaml` file. 
+```
+vim secret.yaml
+```
+
+Fill in below code. Save and exit. 
+```
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gateway-secret
+stringData:
+  PLACEHOLDER: nothing
+type: Opaque
+```
+
+Create a `service.yaml` file. 
+```
+vim service.yaml
+```
+
+Fill in below code. Save and exit. 
+```
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+spec:
+  selector:
+    app: gateway
+  type: ClusterIP
+  ports: 
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+```
+
+Create a `ingress.yaml` file. (To allow traffic to access our gateway endpoint)
+```
+vim ingress.yaml
+```
+
+Fill in below code. Save and exit. 
+```
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-sent-timeout: "600"
+spec:
+  rules:
+    - host: mp3converter.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  number: 8080
+```
+
+To make sure that `mp3converter.com` get routed to localhost, we need to edit a `hosts` file in your local setup. 
+```
+sudo vim /etc/hosts
+```
+
+Add a new line below to `hosts` file. 
+```
+127.0.0.1 mp3converter.com
+```
+![Hosts file](edit_hosts_file.png)
+Save and exit. 
+
+We will now need to configure a minikube add-on to allow ingress. Run below command in your local environment to list the addons that minikube have. 
+```
+minikube addons list
+```
+
+Next, run below command to enable `ingress` addon. 
+```
+minikube addons enable ingress
+```
+
+Below shows `ingress` addon is enabled.
+![Minikube enable ingress addons](minikube_enable_ingress_addon.png)
+
+Basically, whenever we want to test this microservice architecture, we will need to run the `minikube tunnel` command. And when this is running, whenever we send request to our loopback address, it is going to go to our minikube cluster via the ingress. And since we map `mp3converter.com` to our loopback address, if we send request to `mp3converter.com`, they are going to go to this minikube tunnel. 
+```
+minikube tunnel
+```
+
+Next, we will try to create the gateway manifest files. Change directory to the gateway manifest directory.
+```
+kubectl apply -f ./
+```
+
+All the resources should be created now. 
+
+But you should encounter an error in the gateway's pods as the `rabbitmq` service is still not deployed yet.
+![Gateway error. RabbitMQ not deployed yet. ](gateway_pod_error_rabbitmq.png)
+
+So let's just scale our deployment pods down now first, until `rabbitmq` is deployed.
+```
+kubectl scale deployment --replicas=0 gateway
+```
+
+From here we can start to get into the `rabbitmq` stuff. 
+
+### Setup RabbitMQ Service
+
+Change directory back to project root directory. 
+
+Next, create a `rabbitMQ` directory. We shall named it `rabbit`. Then change directory into it.
+```
+mkdir rabbit
+cd rabbit
+```
+
+For `rabbitMQ`, instead of making a deployment like the first two services, we are going to make a stateful set. As we need our queue to remain intact; even if the pods crashes. We want our queue and messages to stay persistent, until the messages are pull from the queue. 
+
+Create a `manifests` directory, and change directory to it. 
+```
+mkdir manifests
+cd manifests
+```
+
+Create a `statefulset.yaml` file. 
+```
+vim statefulset.yaml
+```
+
+Fill in below code. Save and exit. 
+```
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+spec:
+  serviceName: "not-applicable"
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3-management
+          ports:
+            - name: http
+              protocol: TCP
+              containerPort: 15672
+            - name: amqp
+              protocol: TCP
+              containerPort: 5672
+          envFrom:
+            - configMapRef:
+                name: rabbitmq-configmap
+            - secretRef:
+                name: rabbitmq-secret
+          volumeMounts:
+            - mountPath: "/var/lib/rabbitmq"
+              name: rabbitmq-volume
+      volumes:
+        - name: rabbitmq-volume
+          persistentVolumeClaim:
+            claimName: rabbitmq-pvc
+```
+
+Create a `pvc.yaml` file.
+```
+vim pvc.yaml
+```
+
+Fill in below code. Save and exit. 
+```
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rabbitmq-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: standard
+```
+
+Create a `service.yaml` file.
+```
+vim service.yaml
+```
+
+Fill in below code. Save and exit. 
+```
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+spec:
+  type: ClusterIP
+  selector:
+    app: rabbitmq
+  ports:
+    - name: http
+      protocol: TCP
+      port: 15672
+      targetPort: 15672
+    - name: amqp
+      protocol: TCP
+      port: 5672
+      targetPort: 5672
+```
+
+As we are going to access the management interface of rabbitMQ from a web browser outside of the cluster at port 15672, we will need to create an ingress to allow access to it.
+
+Create a `ingress.yaml` file.
+```
+vim ingress.yaml
+```
+
+Fill in below code. Save and exit. 
+```
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rabbitmq-ingress
+spec:
+  rules:
+    - host: rabbitmq-manager.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rabbitmq
+                port:
+                  number: 15672
+```
+
+Edit hosts file.
+```
+sudo vim /etc/hosts
+```
+
+Add a new line as below. Save and exit. 
+```
+127.0.0.1 rabbitmq-manager.com
+```
+![Add Rabbitmq to hosts file. ](add_rabbitmq_to_hostsfile.png)
+
+Next, create a `configmap.yaml`. We currently do not need a `configmap` but just in case we need it in future, we will create a template placeholder first. 
+```
+vim configmap.yaml
+```
+
+Fill in below code. Save and exit. 
+```
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-configmap
+data:
+  PLACEHOLDER: "NONE"
+```
+
+We will do the same thing for `secret.yaml`. Create it with:
+```
+vim secret.yaml
+```
+
+Fill in below code. Save and exit. 
+```
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rabbitmq-secret
+stringData:
+  PLACEHOLDER: "NONE"
+type: Opaque
+```
+
+Lets try to apply our manifest files with: 
+```
+kubectl apply -f ./ 
+```
+
+The resources should be created now. Run the below command to check if `rabbitMQ` pod is up.
+```
+K9s
+```
+
+RabbitMQ pod is running as shown below. 
+![rabbitMQ pod is running. ](rabbitmq_pod_running.png)
+
+Let's try to access `rabbitmq-manager.com` in our browser. (Remember to run the `minikube tunnel` command in a separate terminal, and keep it running)
+
+![rabbitMQ management console. ](rabbitmq_management_console.png)
+
+For first-time login, both username and password are `guest`.
+
+It should look something like that after login.
+![rabbitmq_dashboard_after_login. ](rabbitmq_dashboard_after_login.png)
+
+Let's add a `video` queue by going through the below steps. Then click on `Add queue`.
+![add_video_queue. ](add_video_queue.png)
+
+Now we have our video queue here.
+![](video_queue.png)
+
+Now, let's see whether we can start up our gateway server.
+
+Change directory to gateway manifests directory first.
+
+Then run:
+```
+kubectl apply -f ./
+```
+
+We can see our gateway pods are up now.
+![](gateway_pod_is_up.png)
+
+Change directory to project root directory. We will then need to create a `converter` service.
+
+### Setup Converter Service
+
+Create a `converter` directory. This is going to be the consumer service that pull the messages off the video queue.
+```
+mkdir converter
+cd converter
+```
+
+Create a `consumer.py` file.
+```
+vim consumer.py
+```
+
+
+
+
+
+
+
+
+
+
+
