@@ -268,7 +268,7 @@ docker build .
 ```
 
 Next, login to docker hub and create an `auth` repository. For *Repository Name*, key in *auth*. Then click on **create**. 
-![create auth repository](create_auth_repository.png)
+![create auth repository](documentation_images/create_auth_repository.png)
 
 Next we want to tag the image we just built. 
 ```
@@ -280,7 +280,7 @@ You can also run the below command to see your latest tagged image.
 docker image ls
 ```
 
-![auth docker tag](auth_docker_tag.png)
+![auth docker tag](documentation_images/auth_docker_tag.png)
 
 Next, we can push it to our repository. 
 ```
@@ -288,7 +288,7 @@ docker push <your-docker-username>/auth:latest
 ```
 
 Once that is finished, you can go to your **auth** repository and refresh the page. You should see your image tag here. That means we successfully push this image to our repository. 
-![image pushed to auth repository](image_pushed_to_auth_repository.png)
+![image pushed to auth repository](documentation_images/image_pushed_to_auth_repository.png)
 
 Next, make a directory named `manifests`. This directory is going to contain all of the `auth` service's kubernetes configuration. 
 ```
@@ -388,10 +388,10 @@ K9s
 ```
 
 Change the namespace to **all** by hitting `0`. 
-![K9s_1](k9s_1.png)
+![K9s_1](documentation_images/k9s_1.png)
 
 We can see our minikube pods running within the kube-system namespace. 
-![K9s_2](k9s_2.png)
+![K9s_2](documentation_images/k9s_2.png)
 
 Hit `Ctrl + C` to quit K9s interactive window. 
 
@@ -403,10 +403,10 @@ kubectl apply -f ./
 ```
 
 We can see the following kubernetes resources have been created. 
-![K9s resources created](k9s_resources_created.png)
+![K9s resources created](documentation_images/k9s_resources_created.png)
 
 Both instances of our auth service are running now. 
-![Auth both instances running](auth_both_instances_running.png)
+![Auth both instances running](documentation_images/auth_both_instances_running.png)
 
 Now, we can start to write the code for our gateway service. 
 
@@ -716,7 +716,7 @@ docker push <your-docker-username>/gateway:latest
 ```
 
 It automatically create a remote gateway repository for us. 
-![Two repository](two_repository.png)
+![Two repository](documentation_images/two_repository.png)
 
 Next, we will create our kubernetes infrastructure deployment files. 
 
@@ -853,7 +853,7 @@ Add a new line below to `hosts` file.
 ```
 127.0.0.1 mp3converter.com
 ```
-![Hosts file](edit_hosts_file.png)
+![Hosts file](documentation_images/edit_hosts_file.png)
 Save and exit. 
 
 We will now need to configure a minikube add-on to allow ingress. Run below command in your local environment to list the addons that minikube have. 
@@ -867,7 +867,7 @@ minikube addons enable ingress
 ```
 
 Below shows `ingress` addon is enabled.
-![Minikube enable ingress addons](minikube_enable_ingress_addon.png)
+![Minikube enable ingress addons](documentation_images/minikube_enable_ingress_addon.png)
 
 Basically, whenever we want to test this microservice architecture, we will need to run the `minikube tunnel` command. And when this is running, whenever we send request to our loopback address, it is going to go to our minikube cluster via the ingress. And since we map `mp3converter.com` to our loopback address, if we send request to `mp3converter.com`, they are going to go to this minikube tunnel. 
 ```
@@ -882,7 +882,7 @@ kubectl apply -f ./
 All the resources should be created now. 
 
 But you should encounter an error in the gateway's pods as the `rabbitmq` service is still not deployed yet.
-![Gateway error. RabbitMQ not deployed yet. ](gateway_pod_error_rabbitmq.png)
+![Gateway error. RabbitMQ not deployed yet. ](documentation_images/gateway_pod_error_rabbitmq.png)
 
 So let's just scale our deployment pods down now first, until `rabbitmq` is deployed.
 ```
@@ -1036,7 +1036,7 @@ Add a new line as below. Save and exit.
 ```
 127.0.0.1 rabbitmq-manager.com
 ```
-![Add Rabbitmq to hosts file. ](add_rabbitmq_to_hostsfile.png)
+![Add Rabbitmq to hosts file. ](documentation_images/add_rabbitmq_to_hostsfile.png)
 
 Next, create a `configmap.yaml`. We currently do not need a `configmap` but just in case we need it in future, we will create a template placeholder first. 
 ```
@@ -1080,22 +1080,22 @@ K9s
 ```
 
 RabbitMQ pod is running as shown below. 
-![rabbitMQ pod is running. ](rabbitmq_pod_running.png)
+![rabbitMQ pod is running. ](documentation_images/rabbitmq_pod_running.png)
 
 Let's try to access `rabbitmq-manager.com` in our browser. (Remember to run the `minikube tunnel` command in a separate terminal, and keep it running)
 
-![rabbitMQ management console. ](rabbitmq_management_console.png)
+![rabbitMQ management console. ](documentation_images/rabbitmq_management_console.png)
 
 For first-time login, both username and password are `guest`.
 
 It should look something like that after login.
-![rabbitmq_dashboard_after_login. ](rabbitmq_dashboard_after_login.png)
+![rabbitmq_dashboard_after_login. ](documentation_images/rabbitmq_dashboard_after_login.png)
 
 Let's add a `video` queue by going through the below steps. Then click on `Add queue`.
-![add_video_queue. ](add_video_queue.png)
+![add_video_queue. ](documentation_images/add_video_queue.png)
 
 Now we have our video queue here.
-![](video_queue.png)
+![](documentation_images/video_queue.png)
 
 Now, let's see whether we can start up our gateway server.
 
@@ -1107,7 +1107,7 @@ kubectl apply -f ./
 ```
 
 We can see our gateway pods are up now.
-![](gateway_pod_is_up.png)
+![](documentation_images/gateway_pod_is_up.png)
 
 Change directory to project root directory. We will then need to create a `converter` service.
 
