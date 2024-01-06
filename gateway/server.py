@@ -28,7 +28,13 @@ def login():
 def upload():
     access, err = validate.token(request)
 
+    print('access content:', access)
+    print('err content:', err)
+
     access = json.loads(access)
+
+    if access is None:
+        return "No data provided", 400  # 400 Bad Request
 
     if access["admin"]:
         if len(request.files) > 1 or len(request.files) < 1:
