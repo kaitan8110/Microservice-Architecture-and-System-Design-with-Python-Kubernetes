@@ -1219,7 +1219,7 @@ def start(message, fs_videos, fs_mp3s, channel):
     tf.close()
 
     # write audio to the file
-    tf_path = tempfile.gettempdir() + f"/{message['video_id']}.mp3"
+    tf_path = tempfile.gettempdir() + f"/{message['video_fid']}.mp3"
     audio.write_audiofile(tf_path)
 
     # save file to mongo
@@ -1435,9 +1435,50 @@ For make it simpler to work with, let's change the file name of the video file t
 mv Mark\ Zuckerberg\ Says\ He\ Is\ Not\ a\ Lizard\ Person\ _\ Inverse-jiudBq7z8wk.mp4 test.mkv
 ```
 
+Next, run the below command in converter/manifests directory. Replace the jwt token below with your own. 
 ```
-curl -X POST -F 'file=@./test.mkv' -H 'Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VybmFtZSI6ImthaXRhbjgxMTBAZ21haWwuY29tIiwiZXhwIjoxNzA0NjEyMjExLCJpYXQiOjE3MDQ1MjU4MTEsImFkbWluIjp0cnVlfQ.x6c3TLQwSs_rdRU-2gDmRZ0VXie_ZK2EibDJps5f8uM' http://mp3converter.com/upload
+curl -X POST -F 'file=@./test.mkv' -H 'Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VybmFtZSI6ImthaXRhbjgxMTBAZ21haWwuY29tIiwiZXhwIjoxNzA0NzIwNDU0LCJpYXQiOjE3MDQ2MzQwNTQsImFkbWluIjp0cnVlfQ.hcQyuAqHmF8zUlSbwAdVie2UXK2cc2U8HgiH4T9FP3s' http://mp3converter.com/upload
 ```
 
+You should get a success result like below. 
+![](documentation_images/upload_success.png)
 
+In the RabbitMQ dashboard, there should be a message at `video` queue initially. Thereafter, there should be a message in `mp3` queue. (You should have one message only if you execute it one time. I have 5 messages as I have previously ran multiple times)
+![](documentation_images/messages_stacking_up_at_mp3_queue.png)
 
+It seems that we have successfully written audio file as well. (Below is `converter` container's logs in K9s)
+![](documentation_images/writing_audio_done.png)
+
+Let's now check our mongoDB to see if there is videos or audio files being stored there. 
+
+Run `mongosh`, which should put you directly into mongoDB that is running in our localhost/local machine. 
+```
+mongosh
+```
+
+Next run the below command, which shows you that we have these mp3s and videos databases.
+![](documentation_images/mongosh.png)
+
+With gridFS, the actual file data is stored in these chunks. And the files are essentially like the metadata for a collection of chunks. (I have previously uploaded a few videos beforehand, thus here shows more than one result)
+![](documentation_images/db_fs_files.png)
+
+Let try to get message of the mp3 queue from the RabbitMQ dashboard. Then, copy the `mp3_fid` value. 
+![](documentation_images/get_message_from_mp3.png)
+
+Let's try to run the below command in mongoDB shell. As you can see, the `mp3_fid` is stored successfully, inside of our mp3s database.  
+![](documentation_images/fs_files_objectid.png)
+
+So now we want to download the above mp3, to see if it is an audio file. And to do that. we can exit the mongodb shell first. 
+```
+exit
+```
+
+Then run the below command in your local terminal. The command below will save a `test.mp3` audio file in your current directory. 
+```
+mongofiles --db=mp3s get_id --local=test.mp3 '{"$oid": "659aa8cb6f412c7a4ba67d3f"}'
+```
+
+If the output is as below, it means it is successful. And you may test the `test.mp3` in your current directory. 
+![](documentation_images/write_audio_file.png)
+
+Looks like our end to end functionality is working, up to the point where we put the message on the mp3 queue. So at this point, we are uploading our video, and adding the message to a video queue. So essentially, when we upload a video, it gets put onto mongoDB, then we create a message and add it to this video queue. And then our consumer converter service is going to pull off of this video queue. Convert the video into an mp3, and then put a new message on this mp3 queue, saying that an mp3 for a specific file ID exists in mongoDB. So the last thing we need to create is a service that is going to consume this mp3 queue. And that service is just going to a notification service that is going to tell our user that a video is done, or a video conversion to mp3 process is done. So the service is essentially going to pull the messages off the queue. And it's going to have the ID and the email of the user. And it's going to send an email to the user saying "Hey, this ID is available for download as an mp3". And then from there, there's going to be a download endpoint that we create on our gateway. Where the user can use his or her token to basically request to download a specific mp3, using the file ID that's sent in the notification service email. 
