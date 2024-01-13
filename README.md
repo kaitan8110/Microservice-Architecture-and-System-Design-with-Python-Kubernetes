@@ -1481,4 +1481,440 @@ mongofiles --db=mp3s get_id --local=test.mp3 '{"$oid": "659aa8cb6f412c7a4ba67d3f
 If the output is as below, it means it is successful. And you may test the `test.mp3` in your current directory. 
 ![](documentation_images/write_audio_file.png)
 
-Looks like our end to end functionality is working, up to the point where we put the message on the mp3 queue. So at this point, we are uploading our video, and adding the message to a video queue. So essentially, when we upload a video, it gets put onto mongoDB, then we create a message and add it to this video queue. And then our consumer converter service is going to pull off of this video queue. Convert the video into an mp3, and then put a new message on this mp3 queue, saying that an mp3 for a specific file ID exists in mongoDB. So the last thing we need to create is a service that is going to consume this mp3 queue. And that service is just going to a notification service that is going to tell our user that a video is done, or a video conversion to mp3 process is done. So the service is essentially going to pull the messages off the queue. And it's going to have the ID and the email of the user. And it's going to send an email to the user saying "Hey, this ID is available for download as an mp3". And then from there, there's going to be a download endpoint that we create on our gateway. Where the user can use his or her token to basically request to download a specific mp3, using the file ID that's sent in the notification service email. 
+Looks like our end to end functionality is working, up to the point where we put the message on the mp3 queue. So essentially, when we upload a video, it gets put onto mongoDB, then we create a message and add it to this video queue. And then our consumer converter service is going to pull off of this video queue. Convert the video into an mp3, and then put a new message on this mp3 queue, saying that an mp3 for a specific file ID exists in mongoDB. So the last thing we need to create is a service that is going to consume this mp3 queue. 
+
+And that service is just going to a notification service that is going to tell our user that a video-conversion-to-mp3 process is done. So the service is essentially going to pull the messages off the queue. And it's going to have the ID and the email of the user. And it's going to send an email to the user saying "Hey, this ID is available for download as an mp3". And then from there, there's going to be a download endpoint that we create on our gateway. Where the user can use his or her token to basically request to download a specific mp3, using the file ID that's sent in the notification service email. 
+
+Next, we need to update our gateway service to have a download endpoint.
+
+Change directory to `gateway` directory.
+
+Let's update `server.py` file. 
+```
+vim server.py
+```
+
+Edit the `server.py` file as below. Save and close it. 
+```
+import os, gridfs, pika, json
+from flask import Flask, request, send_file
+from flask_pymongo import PyMongo
+from auth import validate
+from auth_svc import access
+from storage import util
+from bson.objectid import ObjectId
+
+server = Flask(__name__)
+
+mongo_video = PyMongo(
+    server,
+    uri="mongodb://host.minikube.internal:27017/videos"
+)
+
+mongo_mp3 = PyMongo(
+    server,
+    uri="mongodb://host.minikube.internal:27017/mp3s"
+)
+
+fs_videos = gridfs.GridFS(mongo_video.db)
+fs_mp3s = gridfs.GridFS(mongo_mp3.db)
+
+connection = pika.BlockingConnection(pika.ConnectionParameters("rabbitmq")) # Configure rabbitMQ connection, make communication with our rabbitMQ's queue synchronouns. 
+channel = connection.channel()
+
+@server.route("/login", methods=["POST"])
+def login():
+    token, err = access.login(request)
+
+    if not err:
+        return token
+    else:
+        return err
+    
+@server.route("/upload", methods=["POST"])
+def upload():
+    access, err = validate.token(request)
+
+    if err:
+        return err
+
+    print('access content:', access)
+    print('err content:', err)
+
+    access = json.loads(access)
+
+    if access is None:
+        return "No data provided", 400  # 400 Bad Request
+
+    if access["admin"]:
+        if len(request.files) > 1 or len(request.files) < 1:
+            return "exactly 1 file required", 400
+
+        for _, f in request.files.items():
+            err = util.upload(f, fs_videos, channel, access)
+        
+            if err:
+                return err
+        
+        return "success!", 200
+    else: 
+        return "not authorized", 401
+
+@server.route("/download", methods=["GET"])
+def download():
+    access, err = validate.token(request)
+    
+    if err:
+        return err
+    
+    print('access content(download): ', access)
+    print('err content(download): ', err)
+
+    access = json.loads(access)
+
+    if access is None:
+        return "No data provided", 400  # 400 Bad Request
+
+    if access["admin"]:
+        fid_string = request.args.get("fid")
+
+        if not fid_string:
+            return "fid is required", 400
+        
+        try:
+            out = fs_mp3s.get(ObjectId(fid_string))
+            return send_file(out, download_name=f"{fid_string}.mp3")
+        except Exception as err:
+            print(err)
+            return "internal server error", 500
+
+    return "not authorized", 401
+        
+if __name__ == "__main__":
+    server.run(host="0.0.0.0", port=8080)
+
+```
+
+Since we have changed our code, we will need to rebuild our docker image and push it to our repository. Once that is done, we can proceed to create our notification service. 
+
+### Notification Service
+
+Change to the root project directory, and create a new `notification` directory. Then change directory to it. 
+```
+mkdir notification
+cd notification
+```
+
+Create a `consumer.py` file. 
+```
+vim consumer.py
+```
+
+Edit as follows. Save and exit. 
+```
+import pika, sys, os, time
+from send import email
+
+def main():
+    # rabbitmq connection
+    connection = pika.BlockingConnection(
+        pika.ConnectionParameters(host="rabbitmq")
+    )
+    channel = connection.channel()
+
+    def callback(ch, method, properties, body):
+        err = email.notification(body)
+        print("callback err: ", err)
+        if err:
+            ch.basic_nack(delivery_tag=method.delivery_tag)
+        else:
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+
+    channel.basic_consume(
+        queue=os.environ.get("MP3_QUEUE"), on_message_callback=callback
+    )
+    
+    print("Waiting for messages. To exit press CTRL+C")
+
+    channel.start_consuming()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("Interrupted")
+        try:
+            sys.exit(0)
+        except SystemExit:
+            os._exit(0)```
+```
+
+Make a `send`directory within notification directory. 
+```
+mkdir send
+cd send
+```
+
+Create a `__init__.py` file in it. 
+```
+touch __init__.py
+```
+
+Create an `email.py` file. Save and exit. 
+```
+vim email.py
+```
+
+```
+import smtplib, os, json
+from email.message import EmailMessage
+
+def notification(message):
+    try:
+        message = json.loads(message)
+        mp3_fid = message["mp3_fid"]
+        sender_address = os.environ.get("GMAIL_ADDRESS")
+        sender_password = os.environ.get("GMAIL_PASSWORD")
+        receiver_address = message["username"]
+
+        msg = EmailMessage()
+        msg.set_content(f"mp3 file_id: {mp3_fid} is now ready!")
+        msg["Subject"] = "MP3 Download"
+        msg["From"] = sender_address
+        msg["To"] = receiver_address
+
+        session = smtplib.SMTP("smtp.gmail.com")
+        session.starttls()
+        session.login(sender_address, sender_password)
+        session.send_message(msg, sender_address, receiver_address)
+        session.quit()
+        print("Mail Sent")
+
+    except Exception as err:
+        print(err)
+        return err
+```
+
+Next we need to install pika in the `notification service` python virtual environment. 
+Create and activate the virtual env. 
+```
+python3 -m venv venv
+source ./venv/bin/activate
+```
+
+Install `pika`. 
+```
+pip3 install pika
+```
+
+Copy the dockerfile from gateway service to current directory. 
+```
+cp ../gateway/Dockerfile ./
+```
+
+Edit the Dockerfile as below. Save and exit. 
+```
+FROM python:3.10-slim-bullseye
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --no-install-suggests \
+    build-essential \
+    && pip install --no-cache-dir --upgrade pip
+
+WORKDIR /app
+COPY ./requirements.txt /app
+RUN pip install --no-cache-dir --requirement /app/requirements.txt
+COPY . /app
+
+# Set the environment variable
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python3", "consumer.py"]
+```
+
+Copy the manifests directory from converter service. 
+```
+cp -r ../converter/manifests ./
+```
+
+Change to manifests directory. 
+```
+cd manifests
+```
+
+Change file name of `converter-deploy.yaml` to `notification-deploy.yaml`. 
+```
+mv convert-deploy.yaml notification-deploy.yaml
+```
+
+Change all occurrence of `converter` to `notification.` 
+```
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification
+  labels:
+    app: notification
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 8
+  template:
+    metadata:
+      labels:
+        app: notification
+    spec:
+      containers:
+        - name: notification
+          image: kaitan8110/notification
+          envFrom:
+            - configMapRef:
+                name: notification-configmap
+            - secretRef:
+                name: notification-secret
+```
+
+Edit the `configmap.yaml` and `secret.yaml` as follows as well. Save and exit. 
+```
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notification-configmap
+data:
+  MP3_QUEUE: "mp3"
+  VIDEO_QUEUE: "video"
+```
+
+```
+apiVersion: v1
+kind: Secret
+metadata:
+  name: notification-secret
+stringData:
+  PLACEHOLDER: "NONE"
+type: Opaque
+```
+
+Let's create a requirements.txt file. Change directory to the root notification directory. 
+```
+pip3 freeze > requirements.txt
+```
+
+Next build, tag and push docker image.
+```
+docker build .
+docker tag <copy-and-paste-the-sha256-here-after-you-built-the-image> <your-docker-username>/notification:latest
+docker push <your-docker-username>/notification:latest
+```
+
+You should see a newly created image in your docker hub account. 
+![](documentation_images/docker_hub.png)
+
+The next thing we need to do, is to configure our gmail account, to allow non-google account to log in. However, recently I have just realised that google no longer support "less secure apps" access. 
+
+To adapt our code to work with Gmail, we'll need to implement OAuth 2.0 for authentication. This process is a bit more complex than the basic username and password authentication but it's more secure and recommended by Google.
+
+Here are the general steps we need to follow:
+
+1. **Create a Project in Google Cloud Console**: If you haven't already, you'll need to create a project in the Google Cloud Console.
+    
+2. **Enable Gmail API**: In your Google Cloud project, enable the Gmail API.
+    
+3. **Create Credentials**: In the API & Services -> Credentials section, create OAuth client ID credentials. You'll need to configure the consent screen and set up the application type as a desktop app.
+    
+4. **Download the Credentials**: Download the JSON file containing the credentials and save it in your project directory.
+    
+5. **Install Google Client Library**: You'll need the Google Client Library in your Python environment. Install it using pip:
+
+```
+pip install --upgrade google-api-python-client google-auth-httplib2 google-auth-oauthlib
+```
+
+**Modify Your Code**: You'll need to modify your code to use the OAuth 2.0 credentials for authentication. Here's an example of how you could adapt your `notification` function:
+
+```python
+import os
+import json
+from email.message import EmailMessage
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+
+# If modifying these SCOPES, delete the file token.json.
+SCOPES = ['https://www.googleapis.com/auth/gmail.send']
+
+def service_gmail():
+    creds = None
+    # The file token.json stores the user's access and refresh tokens, and is
+    # created automatically when the authorization flow completes for the first
+    # time.
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    # If there are no (valid) credentials available, let the user log in.
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                'credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        # Save the credentials for the next run
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+
+    try:
+        service = build('gmail', 'v1', credentials=creds)
+        return service
+    except HttpError as error:
+        print(f'An error occurred: {error}')
+        return None
+
+def create_message(sender, to, subject, message_text):
+    message = EmailMessage()
+    message.set_content(message_text)
+    message['to'] = to
+    message['from'] = sender
+    message['subject'] = subject
+
+    raw = base64.urlsafe_b64encode(message.as_bytes())
+    raw = raw.decode()
+    body = {'raw': raw}
+    return body
+
+def send_message(service, user_id, message):
+    try:
+        message = (service.users().messages().send(userId=user_id, body=message)
+                   .execute())
+        print('Message Id: %s' % message['id'])
+        return message
+    except HttpError as error:
+        print(f'An error occurred: {error}')
+
+def notification(message):
+    try:
+        message = json.loads(message)
+        mp3_fid = message["mp3_fid"]
+        sender_address = os.environ.get("GMAIL_ADDRESS")
+        receiver_address = message["username"]
+        subject = "MP3 Download"
+        message_text = f"mp3 file_id: {mp3_fid} is now ready!"
+
+        service = service_gmail()
+        if service:
+            msg = create_message(sender_address, receiver_address, subject, message_text)
+            send_message(service, "me", msg)
+
+    except Exception as err:
+        print(err)
+```
+
+This is a simplified example. In a production environment, we would also want to handle token expiration and refreshing more robustly.
+
+Remember, you'll need to follow the prompts to authenticate the first time you run this script, and it will save a token for subsequent uses.
