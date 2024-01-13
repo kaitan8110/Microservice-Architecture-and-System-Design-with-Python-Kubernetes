@@ -7,6 +7,8 @@ from googleapiclient.errors import HttpError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
+print(f"Current Working Directory: {os.getcwd()}")
+
 # If modifying these SCOPES, delete the file token.json.
 SCOPES = ['https://www.googleapis.com/auth/gmail.send']
 
@@ -73,6 +75,7 @@ def notification(message):
 
     except Exception as err:
         print(err)
+        return err
 
 # import smtplib, os, json
 # from email.message import EmailMessage
