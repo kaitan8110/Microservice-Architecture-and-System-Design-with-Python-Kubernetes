@@ -5,4 +5,4 @@ metadata:
 data:
   MP3_QUEUE: "mp3"
   VIDEO_QUEUE: "video"
-  GMAIL_ADDRESS: "kaitan4111@gmail.com"
+  SENDGRID_SENDER_EMAIL: "kaieternity1993@gmail.com"

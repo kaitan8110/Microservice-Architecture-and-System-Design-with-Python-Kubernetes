@@ -14,6 +14,12 @@ This project is a step-by-step code walkthrough of the **Microservice Architectu
 6. Install Mysql
 7. Install MongoDB
 
+- [Setup Auth Service](1_set_up_Auth_Service.md)
+- [Setup Gateway Service](2_set_up_Gateway_Service.md)
+- [Setup RabbitMQ Service](3_set_up_RabbitMQ_Service.md)
+- [Setup Converter Service](4_set_up_Converter_Service.md)
+- [Setup Notification Service](5_set_up_Notification_Service.md)
+
 ### Auth Service
 
 Create a directory for auth and cd into it.  
@@ -1918,3 +1924,235 @@ def notification(message):
 This is a simplified example. In a production environment, we would also want to handle token expiration and refreshing more robustly.
 
 Remember, you'll need to follow the prompts to authenticate the first time you run this script, and it will save a token for subsequent uses.
+
+However, after trying many ways, I still couldn't make it work with Gmail's SMTP server. I have tried to use the username and password method, but currently Gmail does not support "less secure app" access. So this option is out. Thereafter, I tried to use OAuth 2.0. But it requires user to manually click the "Allow access", when the browser pops out. However, since we are running with docker, we are not able to manually click the "allowed access". So this option is out as well. Finally, I tried to integrate using service account. To make this option works, service account will need to have domain-wide delegation setup, and in-turn it would requires access to a Google Workspace administrator account. Since this is a personal hobby project and i don't have access to that, this option is unworkable yet again.
+
+Thus I have decided to not use Gmail's SMTP server altogether, and seek to use other third-party email sending service like SendGrid, Mailgun, or Amazon SES. These services provide APIs to send emails and are generally easy to integrate into our Python projects. 
+
+In our case, we will use SendGrid, which is popular for its ease of use and generous free tier. 
+
+### Step 1: Sign Up for SendGrid and Get an API Key
+
+- Sign up for a SendGrid account at [SendGrid.com](https://sendgrid.com/).
+- Once signed in, create an API Key with email sending permissions.
+
+### Step 2: Install the SendGrid Python Client
+
+Install the SendGrid Python client library via pip:
+```
+pip install sendgrid
+```
+
+Remember update the requirements.txt
+```
+pip3 freeze > requirements.txt
+```
+### Step 3: Modify Our Code to Use SendGrid
+
+Here's how you can modify our existing Python script to use SendGrid:
+
+```
+import os
+import json
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
+
+def send_email(sender, recipient, subject, content):
+    message = Mail(
+        from_email=sender,
+        to_emails=recipient,
+        subject=subject,
+        plain_text_content=content
+    )
+    try:
+        sg = SendGridAPIClient(os.environ.get('SENDGRID_API_KEY'))
+        response = sg.send(message)
+        print('Email sent! Status code:', response.status_code)
+    except Exception as e:
+        print("Error within send_email func: ", e)
+
+def notification(payload):
+    try:
+        message = json.loads(payload)
+        mp3_fid = message["mp3_fid"]
+        sender_address = os.environ.get('SENDGRID_SENDER_EMAIL')  # Replace with your SendGrid sender email
+        receiver_address = message["username"]
+        subject = "MP3 Download"
+        message_text = f"mp3 file_id: {mp3_fid} is now ready!"
+
+        send_email(sender_address, receiver_address, subject, message_text)
+
+    except Exception as e:
+        print("Error within notification func: ", e)
+        return e 
+
+# Example usage
+# notification(json.dumps({"mp3_fid": "12345", "username": "example@email.com"}))
+```
+
+As we have changed our python script, we will need to rebuild our docker image, and push to docker hub remote image repository. 
+
+You will need to recreate the notification's kubernetes resources if you have changed any of the manifests' files.  Navigate to the notification's manifest directory. 
+```
+kubectl delete -f ./
+kubectl apply -f ./
+```
+
+### Important Notes:
+
+1. **Environment Variable**: Store your SendGrid API key in an environment variable (`SENDGRID_API_KEY`). Never hardcode your API keys in your source code.
+2. **Sender Email**: Ensure that the sender email (`your-email@example.com`) is verified with SendGrid. You can do this in your SendGrid dashboard.
+3. **Error Handling**: The script includes basic error handling, which you can expand based on your requirements.
+
+This approach using SendGrid is straightforward and doesn't rely on Google's infrastructure. You can easily adapt this example to use other email services like Mailgun or Amazon SES by using their respective libraries and APIs.
+
+
+<u>Additional screenshots for reference</u>
+
+![](documentation_images/sendgrid_apikeys.jpg)
+(Sendgrid API Keys)
+
+![](documentation_images/rabbitmq_channels.jpg)
+(You can monitor whether the gateway, converter or notification services are connected to rabbitmq server by looking at the channels here)
+
+![](documentation_images/email_received.jpg)
+(I have tested two times, and thus have received two emails)
+
+Now let's try to download the mp3 file using the mp3 file_id that was sent to our email. 
+
+Run below command in terminal. 
+```
+curl --output mp3_download.mp3 -X GET -H 'Authorization: Bearer <replace-with-your-token>' 'http://mp3converter.com/download?fid=65a3510d1832669a3613fa81'
+```
+
+The `mp3_download.mp3` is downloaded in current directory. 
+![](documentation_images/mp3_downloaded.jpg)
+
+That means our end-to-end application is fully working now. 
+
+
+**<u><b>Things that can be improved further</b></u>
+
+Currently, in our Python code, the RabbitMQ connection is established at the start of the application. If the connection drops, our application won't reconnect unless restarted. 
+
+To integrate a more robust RabbitMQ connection with reconnection logic into our existing Flask application, we can modify the way we create and use the RabbitMQ connection. Instead of establishing the connection globally at the start, we'll create a function to handle RabbitMQ operations, which includes establishing a connection and gracefully handling reconnection attempts in case of failure.
+
+Edit the server.py in gateway as follows: 
+```
+import os, gridfs, pika, json, time
+from flask import Flask, request, send_file
+from flask_pymongo import PyMongo
+from auth import validate
+from auth_svc import access
+from storage import util
+from bson.objectid import ObjectId
+
+server = Flask(__name__)
+
+mongo_video = PyMongo(
+    server,
+    uri="mongodb://host.minikube.internal:27017/videos"
+)
+
+mongo_mp3 = PyMongo(
+    server,
+    uri="mongodb://host.minikube.internal:27017/mp3s"
+)
+
+fs_videos = gridfs.GridFS(mongo_video.db)
+fs_mp3s = gridfs.GridFS(mongo_mp3.db)
+
+def get_rabbitmq_channel():
+    while True:
+        try:
+            connection = pika.BlockingConnection(pika.ConnectionParameters(host="rabbitmq"))
+            return connection.channel()
+        except pika.exceptions.AMQPConnectionError:
+            print("Connection to RabbitMQ failed. Retrying in 5 seconds...")
+            time.sleep(5)
+
+@server.route("/login", methods=["POST"])
+def login():
+    token, err = access.login(request)
+
+    if not err:
+        return token
+    else:
+        return err
+    
+@server.route("/upload", methods=["POST"])
+def upload():
+    access, err = validate.token(request)
+
+    if err:
+        return err
+
+    print('access content:', access)
+    print('err content:', err)
+
+    access = json.loads(access)
+
+    if access is None:
+        return "No data provided", 400  # 400 Bad Request
+
+    if access["admin"]:
+        if len(request.files) > 1 or len(request.files) < 1:
+            return "exactly 1 file required", 400
+
+        # (Your existing upload logic)
+        # Before calling util.upload, ensure RabbitMQ channel is established
+        channel = get_rabbitmq_channel()
+
+        for _, f in request.files.items():
+            err = util.upload(f, fs_videos, channel, access)
+        
+            if err:
+                return err
+        
+        return "success!", 200
+    else: 
+        return "not authorized", 401
+
+@server.route("/download", methods=["GET"])
+def download():
+    access, err = validate.token(request)
+    
+    if err:
+        return err
+    
+    print('access content(download): ', access)
+    print('err content(download): ', err)
+
+    access = json.loads(access)
+
+    if access is None:
+        return "No data provided", 400  # 400 Bad Request
+
+    if access["admin"]:
+        fid_string = request.args.get("fid")
+
+        if not fid_string:
+            return "fid is required", 400
+        
+        try:
+            out = fs_mp3s.get(ObjectId(fid_string))
+            return send_file(out, download_name=f"{fid_string}.mp3")
+        except Exception as err:
+            print(err)
+            return "internal server error", 500
+
+    return "not authorized", 401
+        
+if __name__ == "__main__":
+    server.run(host="0.0.0.0", port=8080)
+
+```
+
+In this modified code:
+
+- I've added a `get_rabbitmq_channel()` function that attempts to connect to RabbitMQ and returns a channel. If the connection fails, it waits for 5 seconds before retrying.
+- In the `/upload` endpoint, I call `get_rabbitmq_channel()` to ensure that we have a valid channel before proceeding with the upload logic. This ensures that if the RabbitMQ connection was down, the application will attempt to reconnect before processing the request.
+
+This approach provides a basic reconnection mechanism. However, depending on the specifics of your application, you might need to implement more sophisticated error handling and reconnection logic, especially if you have long-running operations or if you need to ensure message delivery in the face of network interruptions.
+
+The end. Thank you.

@@ -1,4 +1,4 @@
-import os, gridfs, pika, json
+import os, gridfs, pika, json, time
 from flask import Flask, request, send_file
 from flask_pymongo import PyMongo
 from auth import validate
@@ -21,8 +21,14 @@ mongo_mp3 = PyMongo(
 fs_videos = gridfs.GridFS(mongo_video.db)
 fs_mp3s = gridfs.GridFS(mongo_mp3.db)
 
-connection = pika.BlockingConnection(pika.ConnectionParameters("rabbitmq")) # Configure rabbitMQ connection, make communication with our rabbitMQ's queue synchronouns. 
-channel = connection.channel()
+def get_rabbitmq_channel():
+    while True:
+        try:
+            connection = pika.BlockingConnection(pika.ConnectionParameters(host="rabbitmq"))
+            return connection.channel()
+        except pika.exceptions.AMQPConnectionError:
+            print("Connection to RabbitMQ failed. Retrying in 5 seconds...")
+            time.sleep(5)
 
 @server.route("/login", methods=["POST"])
 def login():
@@ -51,6 +57,10 @@ def upload():
     if access["admin"]:
         if len(request.files) > 1 or len(request.files) < 1:
             return "exactly 1 file required", 400
+
+        # (Your existing upload logic)
+        # Before calling util.upload, ensure RabbitMQ channel is established
+        channel = get_rabbitmq_channel()
 
         for _, f in request.files.items():
             err = util.upload(f, fs_videos, channel, access)
