@@ -2,7 +2,7 @@
 
 ![architecture](documentation_images/architecture.png)
 
-This project is a step-by-step code walkthrough of the **Microservice Architecture and System Design with Python Kubernetes** project. The credit goes to freeCodeCamp.org. And its youtube video can be found at: https://www.youtube.com/watch?v=hmkF77F9TLw. 
+This project is a step-by-step code walkthrough of the **Microservice Architecture and System Design with Python Kubernetes** project. The credit goes to freeCodeCamp.org. And its youtube video can be found at: https://www.youtube.com/watch?v=hmkF77F9TLw. As Gmail's "Less secure app" access is currently unsupported. I have adapted the code to use SendGrid API instead, for sending emails. 
 
 ### Installation and Setup
 
